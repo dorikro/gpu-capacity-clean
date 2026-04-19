@@ -12,6 +12,7 @@ Usage:
     gpu-capacity probe --gpu H100 -r us                     # Probe H100 in US regions
     gpu-capacity probe --gpu A100 -r uksouth,swedencentral  # Specific regions
     gpu-capacity probe --sku Standard_NC24ads_A100_v4 -r swedencentral
+    gpu-capacity probe --gpu A100 -r swedencentral --count 32  # Test exact count
     gpu-capacity quota --gpu T4 -r europe --available       # Only show available quota
     gpu-capacity pricing --gpu A100 -r us                   # Show pricing
 
@@ -290,19 +291,31 @@ def probe_capacity(
     sku: str,
     region: str,
     max_count: int = 100,
+    exact_count: int | None = None,
     console=None,
 ) -> ProbeResult:
     """
-    Binary search for the maximum number of VMs that can be deployed.
+    Probe VM capacity using ARM dry-run validation.
 
-    Validates progressively with ARM dry-run to find the real capacity limit.
+    If exact_count is set, tests that specific count only.
+    Otherwise, walks through fixed steps (1, 5, 10, 25, 50, 100) up to max_count
+    and reports the highest passing count.
     """
     info = GPU_SKUS[sku]
 
-    # First, try with 1 to check basic availability
-    success, error = _validate_deployment(subscription_id, resource_group, region, sku, 1)
-
-    if not success:
+    # Single exact count mode
+    if exact_count is not None:
+        if console:
+            console.print(f"    [dim]Probing {region}/{sku}: trying {exact_count} VMs...[/dim]", end="\r")
+        success, error = _validate_deployment(subscription_id, resource_group, region, sku, exact_count)
+        if success:
+            return ProbeResult(
+                region=region, sku=sku, gpu=info["gpu"], gpus_per_vm=info["gpus"],
+                vram_gb=info["vram"], vcpus_per_vm=info["vcpus"],
+                max_vms=exact_count, max_gpus=exact_count * info["gpus"],
+                quota_limit_vcpus=0, quota_used_vcpus=0,
+                status="deployable",
+            )
         status = "unavailable"
         if error == "RequestDisallowedByPolicy":
             status = "policy_blocked"
@@ -310,7 +323,6 @@ def probe_capacity(
             status = "quota_exceeded"
         elif error in ("SkuNotAvailable", "OverconstrainedAllocationRequest"):
             status = "unavailable"
-
         return ProbeResult(
             region=region, sku=sku, gpu=info["gpu"], gpus_per_vm=info["gpus"],
             vram_gb=info["vram"], vcpus_per_vm=info["vcpus"],
@@ -319,25 +331,39 @@ def probe_capacity(
             status=status, error=error,
         )
 
-    # Binary search: find maximum deployable count
-    low, high = 1, max_count
-    best = 1
+    # Step-based probing: walk through fixed counts
+    steps = [s for s in [1, 5, 10, 25, 50, 100] if s <= max_count]
+    if max_count not in steps:
+        steps.append(max_count)
 
-    while low <= high:
-        mid = (low + high) // 2
-        if mid == best and mid == low:
+    best = 0
+    last_error = None
+
+    for count in steps:
+        if console:
+            console.print(f"    [dim]Probing {region}/{sku}: trying {count} VMs...[/dim]", end="\r")
+        success, error = _validate_deployment(subscription_id, resource_group, region, sku, count)
+        if success:
+            best = count
+        else:
+            last_error = error
             break
 
-        if console:
-            console.print(f"    [dim]Probing {region}/{sku}: trying {mid} VMs...[/dim]", end="\r")
-
-        success, error = _validate_deployment(subscription_id, resource_group, region, sku, mid)
-
-        if success:
-            best = mid
-            low = mid + 1
-        else:
-            high = mid - 1
+    if best == 0:
+        status = "unavailable"
+        if last_error == "RequestDisallowedByPolicy":
+            status = "policy_blocked"
+        elif last_error == "QuotaExceeded":
+            status = "quota_exceeded"
+        elif last_error in ("SkuNotAvailable", "OverconstrainedAllocationRequest"):
+            status = "unavailable"
+        return ProbeResult(
+            region=region, sku=sku, gpu=info["gpu"], gpus_per_vm=info["gpus"],
+            vram_gb=info["vram"], vcpus_per_vm=info["vcpus"],
+            max_vms=0, max_gpus=0,
+            quota_limit_vcpus=0, quota_used_vcpus=0,
+            status=status, error=last_error,
+        )
 
     return ProbeResult(
         region=region, sku=sku, gpu=info["gpu"], gpus_per_vm=info["gpus"],
@@ -793,6 +819,7 @@ Examples:
     p_probe.add_argument("--gpu", "-g", help="GPU name filter (e.g. A100, H100, T4)")
     p_probe.add_argument("--sku", "-s", help="SKU name filter")
     p_probe.add_argument("--region", "-r", help="Region, group (europe/us/asia), or comma-separated list")
+    p_probe.add_argument("--count", "-c", type=int, help="Test a specific VM count (skip step probing)")
     p_probe.add_argument("--max", type=int, default=100, help="Max VMs to probe (default: 100)")
     p_probe.add_argument("--subscription", help="Subscription ID")
 
@@ -859,7 +886,7 @@ Examples:
                 done += 1
                 sku_short = sku.replace("Standard_", "")
                 console.print(f"  [{done}/{total_probes}] {region} / {sku_short}...", end=" ")
-                result = probe_capacity(sub_id, rg, sku, region, max_count=args.max, console=console)
+                result = probe_capacity(sub_id, rg, sku, region, max_count=args.max, exact_count=args.count, console=console)
                 if result.max_vms > 0:
                     console.print(f"[green]{result.max_vms} VMs ({result.max_gpus} GPUs)[/green]")
                 else:

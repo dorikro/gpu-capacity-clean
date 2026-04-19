@@ -16,7 +16,9 @@ It has three commands:
 
 ### How `probe` works
 
-The tool submits a VMSS deployment template to Azure Resource Manager with `validate` mode. ARM checks quota, policy, SKU availability, and physical capacity — then returns success or a specific error. A binary search finds the maximum deployable count.
+The tool submits a VMSS deployment template to Azure Resource Manager in `validate` mode (dry-run). ARM checks quota, policy, SKU availability, and physical hardware capacity — then returns success or a specific error.
+
+To find the maximum number of VMs you can deploy, the tool walks through fixed steps: **1, 5, 10, 25, 50, 100**. It stops at the first failing count and reports the last successful one. You can also use `--count` to test a specific number directly (e.g. `--count 32`).
 
 **No VMs are created. No resources are deployed. This is a read-only dry-run.**
 
@@ -62,6 +64,9 @@ python gpu_capacity.py probe --gpu H100 -r us
 
 # Probe specific regions
 python gpu_capacity.py probe --gpu A100 -r uksouth,swedencentral
+
+# Test if exactly 32 VMs can be deployed
+python gpu_capacity.py probe --gpu A100 -r swedencentral --count 32
 
 # Quick quota check (faster, no dry-run)
 python gpu_capacity.py quota --gpu T4 -r europe --available
