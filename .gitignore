@@ -1,0 +1,31 @@
+# gpu-capacity CLI tool
+
+## Python
+*.pyc
+__pycache__/
+.venv/
+*.egg-info/
+
+## Environment & Secrets — NEVER commit these
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.cert
+credentials.json
+secrets.json
+
+## Azure
+.azure/
+local.settings.json
+
+## IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
